@@ -4,10 +4,12 @@
     "cosine_std": 0.11366539705807478,
     "centered_cosine_mean": 0.25833745997153074,
     "centered_cosine_std": 0.8987188281362728,
-    "pearson_mean": 0.005364894078280266
+    "pearson_mean": 0.005364894078280267,
+    "pearson_std": 0.01450174628631909
   },
   "control_mismatched": {
     "cosine_mean": 0.9453038980096433,
-    "centered_cosine_mean": 0.5699287523142516
+    "centered_cosine_mean": 0.5699287523142516,
+    "pearson_mean": 0.00549120146565873
   }
 }

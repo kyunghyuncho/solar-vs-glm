@@ -21,7 +21,7 @@ import struct
 import hashlib
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Tuple, Set, Any
 import numpy as np
 import requests
 
@@ -135,8 +135,20 @@ def bytes_to_f32(buf: bytes, dtype: str) -> np.ndarray:
 
 
 def cosine(x: np.ndarray, y: np.ndarray) -> float:
-    x64 = x.astype(np.float64)
-    y64 = y.astype(np.float64)
+    x64 = x.astype(np.float64, copy=False)
+    y64 = y.astype(np.float64, copy=False)
+    nx = np.linalg.norm(x64)
+    ny = np.linalg.norm(y64)
+    if nx == 0.0 or ny == 0.0:
+        return float("nan")
+    return float(np.dot(x64, y64) / (nx * ny))
+
+
+def pearson(x: np.ndarray, y: np.ndarray) -> float:
+    x64 = x.astype(np.float64, copy=False)
+    y64 = y.astype(np.float64, copy=False)
+    x64 = x64 - np.mean(x64)
+    y64 = y64 - np.mean(y64)
     nx = np.linalg.norm(x64)
     ny = np.linalg.norm(y64)
     if nx == 0.0 or ny == 0.0:
@@ -366,13 +378,15 @@ def main():
             glm_emb = glm_embed.get_embedding(glm_id)
 
             cos = cosine(solar_emb, glm_emb)
-
+            pear = pearson(solar_emb, glm_emb)
+            
             results.append({
                 "token": token,
                 "solar_id": solar_id,
                 "glm_id": glm_id,
                 "same_id": solar_id == glm_id,
                 "cosine": cos,
+                "pearson": pear,
             })
 
             if (i + 1) % 50 == 0:
@@ -390,15 +404,23 @@ def main():
     print("=" * 70)
 
     cosines = [r["cosine"] for r in results if not np.isnan(r["cosine"])]
+    pearsons = [r["pearson"] for r in results if not np.isnan(r["pearson"])]
+    
+    if not cosines:
+        print("No valid comparisons found.")
+        return
+
     same_id_cosines = [r["cosine"] for r in results if r["same_id"] and not np.isnan(r["cosine"])]
     diff_id_cosines = [r["cosine"] for r in results if not r["same_id"] and not np.isnan(r["cosine"])]
 
     print(f"\n[Overall Statistics]")
-    print(f"  Total compared: {len(cosines)}")
+    print(f"  Count: {len(cosines)}")
     print(f"  Mean cosine: {np.mean(cosines):.6f}")
     print(f"  Std cosine: {np.std(cosines):.6f}")
     print(f"  Min cosine: {np.min(cosines):.6f}")
     print(f"  Max cosine: {np.max(cosines):.6f}")
+    print(f"  Mean pearson: {np.mean(pearsons):.6f}")
+    print(f"  Std pearson: {np.std(pearsons):.6f}")
 
     # Distribution analysis
     high_sim = sum(1 for c in cosines if c > 0.9)
@@ -496,7 +518,7 @@ def main():
     import csv
     csv_path = os.path.join(args.out_dir, "embedding_comparison.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["token", "solar_id", "glm_id", "same_id", "cosine"])
+        w = csv.DictWriter(f, fieldnames=["token", "solar_id", "glm_id", "same_id", "cosine", "pearson"])
         w.writeheader()
         w.writerows(results)
     print(f"  Saved: {csv_path}")
@@ -506,20 +528,31 @@ def main():
     print("EMBEDDING ANALYSIS CONCLUSION")
     print("=" * 70)
 
-    if mean_cos > 0.8:
-        verdict = "VERY STRONG evidence of embedding derivation"
+    mean_pearson = np.mean(pearsons)
+
+    if mean_pearson > 0.4:
+        verdict = "VERY STRONG evidence of embedding derivation (High Pearson)"
+    elif mean_cos > 0.8:
+        verdict = "STRONG evidence (High Cosine, but check Pearson)"
     elif mean_cos > 0.5:
-        verdict = "STRONG evidence of embedding derivation"
-    elif mean_cos > 0.1:
         verdict = "MODERATE evidence - embeddings partially preserved"
     else:
         verdict = "WEAK evidence - embeddings significantly modified"
 
     print(f"""
   Mean embedding cosine for English tokens: {mean_cos:.4f}
+  Mean embedding pearson: {mean_pearson:.4f}
 
   {verdict}
+""")
 
+    if mean_pearson > 0.4:
+        print(f"  [CONFIRMATION] High Pearson ({mean_pearson:.4f}) confirms embedding shapes are preserved.")
+    elif mean_cos > 0.8:
+        print(f"  [WARNING] High Cosine ({mean_cos:.4f}) but low Pearson ({mean_pearson:.4f}).")
+        print("            This might be an initialization artifact or significant drift.")
+
+    print(f"""
   Combined with LayerNorm analysis (cos=0.97), this provides
   {'additional confirmation' if mean_cos > 0.1 else 'contrasting evidence to'}
   that Solar-Open-100B derived from GLM-4.5-Air.

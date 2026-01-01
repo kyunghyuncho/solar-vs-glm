@@ -234,10 +234,14 @@ def main():
     print("SOLAR-OPEN-100B vs GLM-4.5-AIR: PROVENANCE PROOF")
     print("=" * 70)
 
-    # Tokenizer analysis
+    # # Tokenizer analysis
     print("\n[1/3] Tokenizer analysis...")
-    tok = deep_tokenizer_analysis(MODEL_A, MODEL_B, revision, token)
-    write_json(os.path.join(args.outdir, "tokenizer.json"), tok)
+    if os.path.exists(os.path.join(args.outdir, "tokenizer.json")):
+        tok = read_json(os.path.join(args.outdir, "tokenizer.json"))
+        print("  Loaded cached tokenizer analysis")
+    else:
+        tok = deep_tokenizer_analysis(MODEL_A, MODEL_B, revision, token)
+        write_json(os.path.join(args.outdir, "tokenizer.json"), tok)
     print(f"  Solar: {tok['vocab_A']:,} tokens, GLM: {tok['vocab_B']:,} tokens")
     print(f"  Diff: +{tok['vocab_diff']:,} (Solar has MORE)")
     print(f"  Common: {tok['common_tokens']:,} ({tok['common_ratio']*100:.1f}% of GLM)")
@@ -275,6 +279,7 @@ def main():
     glm_norms = []
 
     for layer in common_layers:
+
         for cat in ["norm_pre", "norm_post"]:
             if cat not in refsA.get(layer, {}) or cat not in refsB.get(layer, {}):
                 continue
@@ -317,6 +322,7 @@ def main():
     # This shows what similarity looks like for UNRELATED layers
     control_cosines = []
     control_centered = []
+    control_pearsons = []
 
     for i in range(min(30, len(solar_norms))):
         for j in range(i + 5, min(i + 10, len(glm_norms))):  # Compare layer i with layer j
@@ -325,6 +331,7 @@ def main():
             if A.shape == B.shape:
                 control_cosines.append(cosine(A, B))
                 control_centered.append(centered_cosine(A, B))
+                control_pearsons.append(pearson(A, B))
 
     # Statistics
     matched_cosines = [r["cosine"] for r in rows if not np.isnan(r["cosine"])]
@@ -338,10 +345,12 @@ def main():
             "centered_cosine_mean": float(np.mean(matched_centered)),
             "centered_cosine_std": float(np.std(matched_centered)),
             "pearson_mean": float(np.mean(matched_pearsons)),
+            "pearson_std": float(np.std(matched_pearsons)),
         },
         "control_mismatched": {
             "cosine_mean": float(np.mean(control_cosines)) if control_cosines else None,
             "centered_cosine_mean": float(np.mean(control_centered)) if control_centered else None,
+            "pearson_mean": float(np.mean(control_pearsons)) if control_pearsons else None,
         }
     }
     write_json(os.path.join(args.outdir, "statistics.json"), stats)
@@ -367,6 +376,8 @@ def main():
     ax1.set_ylim(0.8, 1.01)
 
     # Plot 2: Centered cosine (deviation patterns)
+    # NOTE: Centered cosine is less robust than Pearson for detecting shape preservation
+    # when there is significant drift, but it's kept here for completeness.
     ax2 = axes[0, 1]
     for cat, color in [("norm_pre", "blue"), ("norm_post", "green")]:
         xs = [r["layer"] for r in rows if r["cat"] == cat]
@@ -383,18 +394,24 @@ def main():
     ax2.legend()
     ax2.grid(True, alpha=0.3)
 
-    # Plot 3: Histogram comparison
+    # Plot 3: Pearson Correlation (GOLD STANDARD)
+    # Pearson correlation is the most robust metric for detecting shared lineage
+    # because it measures linear relationship (shape preservation) independent of
+    # mean shift or scaling, which often happen during continual pretraining.
     ax3 = axes[1, 0]
-    ax3.hist(matched_centered, bins=30, alpha=0.7, label='Matched layers (Solar[i] vs GLM[i])', color='blue')
-    if control_centered:
-        ax3.hist(control_centered, bins=30, alpha=0.5, label='Mismatched layers (control)', color='red')
-    ax3.axvline(np.mean(matched_centered), color='blue', linestyle='--', linewidth=2)
-    if control_centered:
-        ax3.axvline(np.mean(control_centered), color='red', linestyle='--', linewidth=2)
-    ax3.set_xlabel('Centered Cosine')
-    ax3.set_ylabel('Count')
-    ax3.set_title('Distribution: Matched vs Mismatched Layer Pairs')
+    for cat, color in [("norm_pre", "blue"), ("norm_post", "green")]:
+        xs = [r["layer"] for r in rows if r["cat"] == cat]
+        ys = [r["pearson"] for r in rows if r["cat"] == cat]
+        ax3.plot(xs, ys, 'o-', color=color, label=cat, markersize=5)
+
+    if control_pearsons:
+        ax3.axhline(np.mean(control_pearsons), color='red', linestyle='--',
+                   label=f'Mismatched layers ({np.mean(control_pearsons):.4f})')
+    ax3.set_xlabel('Layer')
+    ax3.set_ylabel('Pearson Correlation')
+    ax3.set_title('Pearson Correlation: Matched Layers')
     ax3.legend()
+    ax3.grid(True, alpha=0.3)
 
     # Plot 4: Summary
     ax4 = axes[1, 1]
@@ -402,6 +419,7 @@ def main():
 
     ctrl_cos = stats["control_mismatched"]["cosine_mean"] or 0
     ctrl_cent = stats["control_mismatched"]["centered_cosine_mean"] or 0
+    ctrl_pearson = stats["control_mismatched"]["pearson_mean"] or 0
 
     summary = f"""
 PROVENANCE EVIDENCE SUMMARY
@@ -413,13 +431,12 @@ PROVENANCE EVIDENCE SUMMARY
 
    -> Both high because LayerNorms ≈ 1.0 (uninformative)
 
-2. CENTERED COSINE (deviation patterns)
-   Matched layers:    {stats['matched_layers']['centered_cosine_mean']:.4f}
-   Mismatched layers: {ctrl_cent:.4f}
+2. PATTERN CORRELATION (Pearson)
+   Pearson (true mean centered):      {stats['matched_layers']['pearson_mean']:.4f}
+   Control Pearson (mismatched):      {ctrl_pearson:.4f}
 
-   -> THIS IS THE KEY METRIC!
-   -> If centered cosine >> 0, the DEVIATION PATTERNS match
-   -> Random/unrelated models: centered cosine ≈ 0
+   -> Pearson is the most robust metric for shape similarity.
+   -> It confirms if the relative weight patterns are correlated.
 
 3. TOKENIZER ANALYSIS
    Solar = GLM + {tok['vocab_diff']:,} new tokens
@@ -429,14 +446,14 @@ PROVENANCE EVIDENCE SUMMARY
 4. CONCLUSION
 """
 
-    if stats['matched_layers']['centered_cosine_mean'] > 0.3 and ctrl_cent < 0.1:
+    if stats['matched_layers']['pearson_mean'] > 0.3 and ctrl_pearson < 0.1:
         conclusion = """   [STRONG EVIDENCE] Solar derived from GLM
-   - Deviation patterns MATCH (centered cosine >> baseline)
+   - Weight patterns are CORRELATED (Pearson > 0.3)
    - Tokenizer shows EXPANSION pattern
    - Consistent with CONTINUAL PRETRAINING"""
-    elif stats['matched_layers']['centered_cosine_mean'] > 0.1:
+    elif stats['matched_layers']['pearson_mean'] > 0.1:
         conclusion = """   [MODERATE EVIDENCE] Possible shared lineage
-   - Some deviation pattern matching detected"""
+   - Some pattern matching detected"""
     else:
         conclusion = """   [WEAK EVIDENCE] Inconclusive"""
 
@@ -455,18 +472,19 @@ PROVENANCE EVIDENCE SUMMARY
     print("=" * 70)
     print(f"\nMatched layers (Solar[i] vs GLM[i]):")
     print(f"  Raw cosine:      {stats['matched_layers']['cosine_mean']:.4f}")
-    print(f"  Centered cosine: {stats['matched_layers']['centered_cosine_mean']:.4f}")
     print(f"  Pearson:         {stats['matched_layers']['pearson_mean']:.4f}")
 
     print(f"\nMismatched layers (control):")
     print(f"  Raw cosine:      {ctrl_cos:.4f}")
-    print(f"  Centered cosine: {ctrl_cent:.4f}")
+    print(f"  Pearson:         {ctrl_pearson:.4f}")
 
-    diff = stats['matched_layers']['centered_cosine_mean'] - ctrl_cent
+    diff = stats['matched_layers']['pearson_mean'] - ctrl_pearson
     print(f"\nDIFFERENCE (matched - control): {diff:.4f}")
 
-    if diff > 0.2:
-        print("\n[VERDICT] STRONG EVIDENCE of shared origin")
+    if diff > 0.2 and stats['matched_layers']['pearson_mean'] > 0.4:
+        print("\n[VERDICT] STRONG EVIDENCE of shared origin (High Pearson Correlation)")
+        print("The high Pearson correlation confirms that the weight patterns are preserved,")
+        print("which is the gold standard for detecting model derivation.")
     elif diff > 0.05:
         print("\n[VERDICT] MODERATE EVIDENCE of shared origin")
     else:

@@ -201,6 +201,18 @@ def cosine(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.dot(x64, y64) / (nx * ny))
 
 
+def pearson(x: np.ndarray, y: np.ndarray) -> float:
+    x64 = x.astype(np.float64, copy=False)
+    y64 = y.astype(np.float64, copy=False)
+    x64 = x64 - np.mean(x64)
+    y64 = y64 - np.mean(y64)
+    nx = np.linalg.norm(x64)
+    ny = np.linalg.norm(y64)
+    if nx == 0.0 or ny == 0.0:
+        return float("nan")
+    return float(np.dot(x64, y64) / (nx * ny))
+
+
 def rel_rmse(x: np.ndarray, y: np.ndarray) -> float:
     x64 = x.astype(np.float64, copy=False)
     y64 = y.astype(np.float64, copy=False)
@@ -489,6 +501,7 @@ def main():
                     "glm_shape": "",
                     "raw_hash_equal": "",
                     "cosine": "",
+                    "pearson": "",
                     "rel_rmse": "",
                     "z_cos": "",
                     "note": "",
@@ -527,6 +540,7 @@ def main():
                             s_vals = s_vals[:n]
                             g_vals = g_vals[:n]
                             cos = cosine(s_vals, g_vals)
+                            pear = pearson(s_vals, g_vals)
                             rr = rel_rmse(s_vals, g_vals)
                             z = cos * math.sqrt(n) if not math.isnan(cos) else float("nan")
                             rows.append({
@@ -539,11 +553,12 @@ def main():
                                 "glm_shape": "x".join(map(str, g_shape)),
                                 "raw_hash_equal": str(s_raw == g_raw),
                                 "cosine": cos,
+                                "pearson": pear,
                                 "rel_rmse": rr,
                                 "z_cos": z,
                                 "note": "Compared Solar vs GLM prefix-rows slice",
                             })
-                            print(f"[TRUNC_OK] L{L:02d} cos={cos:+.6f} z~{z:+.2f}  {key}")
+                            print(f"[TRUNC_OK] L{L:02d} cos={cos:+.6f} pearson={pear:+.6f} z~{z:+.2f}  {key}")
                             continue
                         else:
                             note = "q_proj truncation not applicable"
@@ -558,6 +573,7 @@ def main():
                         "glm_shape": "x".join(map(str, g_shape)),
                         "raw_hash_equal": "",
                         "cosine": "",
+                        "pearson": "",
                         "rel_rmse": "",
                         "z_cos": "",
                         "note": note,
@@ -573,6 +589,7 @@ def main():
                 g_vals = g_vals[:n]
 
                 cos = cosine(s_vals, g_vals)
+                pear = pearson(s_vals, g_vals)
                 rr = rel_rmse(s_vals, g_vals)
                 z = cos * math.sqrt(n) if not math.isnan(cos) else float("nan")
 
@@ -586,12 +603,13 @@ def main():
                     "glm_shape": "x".join(map(str, g_shape)),
                     "raw_hash_equal": str(s_raw == g_raw),
                     "cosine": cos,
+                    "pearson": pear,
                     "rel_rmse": rr,
                     "z_cos": z,
                     "note": "",
                 })
 
-                print(f"[OK] L{L:02d} cos={cos:+.6f} rr={rr:.6f} z~{z:+.2f} raw_equal={s_raw==g_raw}  {key}")
+                print(f"[OK] L{L:02d} cos={cos:+.6f} pearson={pear:+.6f} rr={rr:.6f} z~{z:+.2f} raw_equal={s_raw==g_raw}  {key}")
 
             except Exception as e:
                 rows.append({
@@ -604,6 +622,7 @@ def main():
                     "glm_shape": "",
                     "raw_hash_equal": "",
                     "cosine": "",
+                    "pearson": "",
                     "rel_rmse": "",
                     "z_cos": "",
                     "note": str(e),
@@ -617,7 +636,28 @@ def main():
         w.writerows(rows)
 
     print(f"\nSaved: {args.out}")
+    
+    # Calculate summary stats
+    valid_pearsons = [r["pearson"] for r in rows if isinstance(r["pearson"], (int, float)) and not math.isnan(r["pearson"])]
+    mean_pearson = sum(valid_pearsons) / len(valid_pearsons) if valid_pearsons else 0.0
+
+    print("\n" + "=" * 70)
+    print("CONCLUSION")
+    print("=" * 70)
+    print(f"Mean Pearson Correlation: {mean_pearson:.4f}")
+    
+    if mean_pearson > 0.4:
+        print("VERDICT: STRONG EVIDENCE of weight reuse.")
+        print("High Pearson correlation confirms that weight PATTERNS are identical.")
+    elif mean_pearson > 0.1:
+        print("VERDICT: MODERATE EVIDENCE.")
+        print("Some correlation detected, but not definitive.")
+    else:
+        print("VERDICT: NO EVIDENCE of weight reuse.")
+        print("Weights appear uncorrelated.")
+
     print("\nHow to interpret:")
+    print("- Pearson > 0.4 is the gold standard for proving derivation (robust to drift).")
     print("- If many large tensors show raw_hash_equal=True or cosine≈1 across multiple layers => extremely strong evidence of reuse/identity.")
     print("- If cosines stay ~0 with small magnitude (e.g. |cos| < 0.003 for n≈262k) across many tensors/layers => no evidence of weight reuse.")
     print("- k_proj/v_proj/router/norm are the most comparable even if q-head count differs.")

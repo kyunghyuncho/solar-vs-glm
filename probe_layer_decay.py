@@ -9,6 +9,11 @@ If Solar is continual pretrained from GLM:
 - Early layers should show STRONG similarity (close to original)
 - Later layers should show WEAKER similarity (drifted during training)
 - This creates a "decay" pattern from early to late layers
+
+NOTE ON METRICS:
+- Cosine Similarity can be misleading for LayerNorm weights due to initialization artifacts (mean ~ 1.0).
+- Pearson Correlation is the "Gold Standard" as it is mean-invariant.
+- We calculate both, but prioritize Pearson for the final verdict.
 """
 
 import argparse
@@ -289,10 +294,10 @@ LAYER DECAY ANALYSIS RESULTS
 3. PEARSON CORRELATION
    Mean across all layers: {np.mean(pearson_by_layer):.4f}
 
-   Near-zero Pearson with high cosine means:
+   High Pearson correlation (>0.3) with high cosine means:
    → Vectors point in SAME direction
-   → But have DIFFERENT magnitudes
-   → Consistent with CONTINUAL PRETRAINING drift
+   → AND relative weight patterns are preserved
+   → Strong evidence of shared lineage despite drift
 
 4. INTERPRETATION
 """
@@ -307,6 +312,9 @@ LAYER DECAY ANALYSIS RESULTS
             evidence += "\n→ MODERATE EVIDENCE of shared origin"
     else:
         evidence = "No clear diagonal dominance\n→ WEAK/NO EVIDENCE"
+
+    if np.mean(pearson_by_layer) > 0.3:
+        evidence += f"\n\n[CONFIRMATION] High Pearson ({np.mean(pearson_by_layer):.2f}) confirms pattern preservation"
 
     ax4.text(0.02, 0.98, summary + evidence, transform=ax4.transAxes,
              fontsize=9, verticalalignment='top', fontfamily='monospace',
@@ -340,12 +348,16 @@ LAYER DECAY ANALYSIS RESULTS
     print(f"Late layers ({mid}-{n-1}):   {late_sim:.4f}")
     print(f"DECAY:                  {early_sim - late_sim:.4f}")
 
-    if np.mean(diag) > np.mean(off_diag) + 0.01 and early_sim > late_sim:
+    if np.mean(pearson_by_layer) > 0.4:
         print("\n[VERDICT] STRONG EVIDENCE: Solar derived from GLM via continual pretraining")
+        print(f"          (High Pearson Correlation {np.mean(pearson_by_layer):.4f} confirms pattern preservation)")
+    elif np.mean(diag) > np.mean(off_diag) + 0.01 and early_sim > late_sim:
+        print("\n[VERDICT] MODERATE EVIDENCE: Solar derived from GLM via continual pretraining")
+        print("          (Diagonal dominance and decay pattern detected, but Pearson is low)")
     elif np.mean(diag) > np.mean(off_diag):
-        print("\n[VERDICT] MODERATE EVIDENCE: Shared origin likely")
+        print("\n[VERDICT] WEAK EVIDENCE: Shared origin possible")
     else:
-        print("\n[VERDICT] WEAK EVIDENCE: Inconclusive")
+        print("\n[VERDICT] NO EVIDENCE: Inconclusive")
 
     print(f"\nPlot: {plot_path}")
 

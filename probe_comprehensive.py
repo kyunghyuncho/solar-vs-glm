@@ -433,14 +433,21 @@ def main():
 
     def calc_stats(rows: List[Dict], category: str) -> Dict[str, float]:
         vals = [r["cosine"] for r in rows if r["category"] == category and not np.isnan(r["cosine"])]
+        pearsons = [r["pearson"] for r in rows if r["category"] == category and not np.isnan(r["pearson"])]
+        
         if not vals:
-            return {"mean": None, "std": None, "min": None, "max": None, "count": 0}
+            return {
+                "mean": None, "std": None, "min": None, "max": None, "count": 0,
+                "pearson_mean": None, "pearson_std": None
+            }
         return {
             "mean": float(np.mean(vals)),
             "std": float(np.std(vals)),
             "min": float(np.min(vals)),
             "max": float(np.max(vals)),
             "count": len(vals),
+            "pearson_mean": float(np.mean(pearsons)) if pearsons else None,
+            "pearson_std": float(np.std(pearsons)) if pearsons else None,
         }
 
     stats = {
@@ -525,9 +532,9 @@ EVIDENCE SUMMARY
    - {tok_analysis['merges_B_coverage_in_A']*100:.1f}% of GLM merges exist in Solar
 
 3. INTERPRETATION
-   - Cosine ~1.0 with Pearson ~0 suggests:
-     * Vectors point in SAME direction (angle preserved)
-     * But magnitudes have drifted (continual training)
+   - High Cosine (>0.9) indicates vectors point in same direction (shared initialization)
+   - Pearson Correlation ({stats['norm_pre']['pearson_mean']:.2f}) measures shape preservation
+   - If Pearson > 0.3, weight PATTERNS are preserved despite drift
    - This is CONSISTENT with continual pretraining
    - GLM -> Solar with tokenizer expansion (+{tok_analysis['vocab_diff']:,} tokens)
 """
@@ -549,7 +556,9 @@ EVIDENCE SUMMARY
 
     print("\n--- WEIGHT SIMILARITY ---")
     print(f"  norm_pre cosine:  mean={stats['norm_pre']['mean']:.4f}, max={stats['norm_pre']['max']:.4f}")
+    print(f"  norm_pre pearson: mean={stats['norm_pre']['pearson_mean']:.4f}")
     print(f"  norm_post cosine: mean={stats['norm_post']['mean']:.4f}, max={stats['norm_post']['max']:.4f}")
+    print(f"  norm_post pearson: mean={stats['norm_post']['pearson_mean']:.4f}")
     print(f"  Random baseline:  mean={baseline['cosine_mean']:.4f}, max={baseline['cosine_max']:.4f}")
 
     sigma_above = (stats['norm_pre']['mean'] - baseline['cosine_mean']) / baseline['cosine_std']
@@ -561,14 +570,21 @@ EVIDENCE SUMMARY
     print(f"  {tok_analysis['merges_B_coverage_in_A']*100:.1f}% of GLM's BPE merges preserved in Solar")
 
     print("\n--- CONCLUSION ---")
-    if stats['norm_pre']['mean'] > 0.9 and sigma_above > 100:
+    pearson_val = stats['norm_pre']['pearson_mean'] or 0.0
+    
+    # We use Pearson > 0.4 as the threshold for "Very Strong Evidence" because
+    # it indicates significant preservation of weight patterns (shapes)
+    # even if the absolute values have drifted (which affects Cosine/Euclidean).
+    if pearson_val > 0.4:
         print("  [VERY STRONG EVIDENCE] Solar-Open-100B appears to be derived from GLM-4.5-Air")
-        print("  - LayerNorm weights show near-identical direction (cosine > 0.9)")
-        print("  - Statistical impossibility of random occurrence")
+        print(f"  - Weight patterns are CORRELATED (Pearson {pearson_val:.2f} > 0.4)")
+        print("  - This confirms shared lineage robust to mean shift/drift")
         print("  - Tokenizer shows expansion pattern (GLM subset + additions)")
-        print("  - Pattern consistent with CONTINUAL PRETRAINING with tokenizer expansion")
-    elif stats['norm_pre']['mean'] > 0.7:
-        print("  [STRONG EVIDENCE] High similarity suggests shared lineage")
+        print("  - Pattern consistent with CONTINUAL PRETRAINING")
+    elif stats['norm_pre']['mean'] > 0.9 and sigma_above > 100:
+        print("  [MODERATE EVIDENCE] High Cosine Similarity detected")
+        print("  - LayerNorm weights show near-identical direction (cosine > 0.9)")
+        print("  - However, Pearson is low, suggesting patterns may differ (initialization artifact?)")
     else:
         print("  [INCONCLUSIVE] More investigation needed")
 

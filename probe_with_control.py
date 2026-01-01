@@ -425,10 +425,10 @@ def main():
     # ============ PLOTTING ============
     print("\n[4/4] Generating comparison plots...")
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    # Plot 1: norm_pre comparison
-    ax1 = axes[0]
+    # Plot 1: norm_pre comparison (Cosine)
+    ax1 = axes[0, 0]
 
     layers_main, cos_main = aggregate_by_layer(rows_main, "norm_pre")
     layers_ctrl, cos_ctrl = aggregate_by_layer(rows_control, "norm_pre")
@@ -446,8 +446,8 @@ def main():
     ax1.grid(True, alpha=0.3)
     ax1.set_ylim(-0.1, 1.05)
 
-    # Plot 2: norm_post comparison
-    ax2 = axes[1]
+    # Plot 2: norm_post comparison (Cosine)
+    ax2 = axes[0, 1]
 
     layers_main2, cos_main2 = aggregate_by_layer(rows_main, "norm_post")
     layers_ctrl2, cos_ctrl2 = aggregate_by_layer(rows_control, "norm_post")
@@ -465,6 +465,52 @@ def main():
     ax2.grid(True, alpha=0.3)
     ax2.set_ylim(-0.1, 1.05)
 
+    # Plot 3: Pearson Correlation (norm_pre)
+    ax3 = axes[1, 0]
+    
+    # Helper to aggregate pearson
+    def aggregate_pearson_by_layer(rows: List[Dict], category: str) -> Tuple[List[int], List[float]]:
+        per_layer = defaultdict(list)
+        for r in rows:
+            if r["category"] == category:
+                per_layer[r["layer"]].append(r["pearson"])
+        layers = sorted(per_layer.keys())
+        means = [np.mean(per_layer[L]) for L in layers]
+        return layers, means
+
+    layers_main_p, pearson_main = aggregate_pearson_by_layer(rows_main, "norm_pre")
+    layers_ctrl_p, pearson_ctrl = aggregate_pearson_by_layer(rows_control, "norm_pre")
+
+    if layers_main_p and pearson_main:
+        ax3.plot(layers_main_p, pearson_main, 'b-o', label='Solar vs GLM (MAIN)', linewidth=2, markersize=6)
+    if layers_ctrl_p and pearson_ctrl:
+        ax3.plot(layers_ctrl_p, pearson_ctrl, 'r--s', label='GLM vs Qwen2 (CONTROL)', linewidth=2, markersize=5, alpha=0.7)
+    
+    ax3.axhline(y=0.0, color='gray', linestyle=':', alpha=0.5)
+    ax3.set_xlabel('Layer Index')
+    ax3.set_ylabel('Pearson Correlation')
+    ax3.set_title('Pearson Correlation (norm_pre)')
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+
+    # Plot 4: Pearson Correlation (norm_post)
+    ax4 = axes[1, 1]
+
+    layers_main_p2, pearson_main2 = aggregate_pearson_by_layer(rows_main, "norm_post")
+    layers_ctrl_p2, pearson_ctrl2 = aggregate_pearson_by_layer(rows_control, "norm_post")
+
+    if layers_main_p2 and pearson_main2:
+        ax4.plot(layers_main_p2, pearson_main2, 'b-o', label='Solar vs GLM (MAIN)', linewidth=2, markersize=6)
+    if layers_ctrl_p2 and pearson_ctrl2:
+        ax4.plot(layers_ctrl_p2, pearson_ctrl2, 'r--s', label='GLM vs Qwen2 (CONTROL)', linewidth=2, markersize=5, alpha=0.7)
+
+    ax4.axhline(y=0.0, color='gray', linestyle=':', alpha=0.5)
+    ax4.set_xlabel('Layer Index')
+    ax4.set_ylabel('Pearson Correlation')
+    ax4.set_title('Pearson Correlation (norm_post)')
+    ax4.legend()
+    ax4.grid(True, alpha=0.3)
+
     plt.tight_layout()
     plot_path = os.path.join(args.outdir, "comparison_with_control.png")
     plt.savefig(plot_path, dpi=200, bbox_inches='tight')
@@ -474,13 +520,16 @@ def main():
     # ============ STATISTICS ============
     def calc_stats(rows: List[Dict], category: str) -> Dict[str, float]:
         vals = [r["cosine"] for r in rows if r["category"] == category and not np.isnan(r["cosine"])]
+        pearsons = [r["pearson"] for r in rows if r["category"] == category and not np.isnan(r["pearson"])]
+        
         if not vals:
-            return {"mean": None, "std": None, "min": None, "max": None}
+            return {"mean": None, "std": None, "min": None, "max": None, "pearson_mean": None}
         return {
             "mean": float(np.mean(vals)),
             "std": float(np.std(vals)),
             "min": float(np.min(vals)),
             "max": float(np.max(vals)),
+            "pearson_mean": float(np.mean(pearsons)) if pearsons else None,
         }
 
     stats = {
@@ -514,27 +563,41 @@ def main():
         npo_str = f"{npo_mean:.4f}" if npo_mean else "N/A"
         print(f"{name:<30} {np_str:<20} {npo_str:<20}")
 
+    print("\n--- Pearson Correlation Statistics ---")
+    print(f"{'Comparison':<30} {'norm_pre':<20} {'norm_post':<20}")
+    print("-" * 70)
+
+    for name, s in stats.items():
+        np_mean = s["norm_pre"]["pearson_mean"]
+        npo_mean = s["norm_post"]["pearson_mean"]
+        np_str = f"{np_mean:.4f}" if np_mean else "N/A"
+        npo_str = f"{npo_mean:.4f}" if npo_mean else "N/A"
+        print(f"{name:<30} {np_str:<20} {npo_str:<20}")
+
     print("\n--- INTERPRETATION ---")
 
     main_np = stats["Solar_vs_GLM"]["norm_pre"]["mean"] or 0
     ctrl_np = stats["GLM_vs_Qwen2_CONTROL"]["norm_pre"]["mean"] or 0
-    main_npo = stats["Solar_vs_GLM"]["norm_post"]["mean"] or 0
-    ctrl_npo = stats["GLM_vs_Qwen2_CONTROL"]["norm_post"]["mean"] or 0
+    
+    main_np_p = stats["Solar_vs_GLM"]["norm_pre"]["pearson_mean"] or 0
+    ctrl_np_p = stats["GLM_vs_Qwen2_CONTROL"]["norm_pre"]["pearson_mean"] or 0
 
-    if main_np > 0.8 and ctrl_np < 0.3:
-        print(f"[STRONG EVIDENCE] norm_pre: Solar-GLM ({main_np:.3f}) >> Control ({ctrl_np:.3f})")
-    elif main_np > ctrl_np + 0.2:
-        print(f"[MODERATE EVIDENCE] norm_pre: Solar-GLM ({main_np:.3f}) > Control ({ctrl_np:.3f})")
+    # Prioritize Pearson for conclusion as it is robust to mean shift/drift
+    # and avoids false positives from LayerNorm initialization (all ~1.0).
+    if main_np_p > 0.4:
+        print(f"[STRONG EVIDENCE] norm_pre Pearson ({main_np_p:.3f}) >> Control ({ctrl_np_p:.3f})")
+        print("                  Weight patterns are preserved (robust to drift).")
+    elif main_np > 0.8 and ctrl_np < 0.3:
+        print(f"[MODERATE EVIDENCE] norm_pre Cosine ({main_np:.3f}) >> Control ({ctrl_np:.3f})")
+        print("                    Vectors align, but low Pearson suggests patterns differ.")
     else:
         print(f"[WEAK/NO EVIDENCE] norm_pre: Solar-GLM ({main_np:.3f}) vs Control ({ctrl_np:.3f})")
 
-    if main_npo > 0.8 and ctrl_npo < 0.3:
-        print(f"[STRONG EVIDENCE] norm_post: Solar-GLM ({main_npo:.3f}) >> Control ({ctrl_npo:.3f})")
-    elif main_npo > ctrl_npo + 0.2:
-        print(f"[MODERATE EVIDENCE] norm_post: Solar-GLM ({main_npo:.3f}) > Control ({ctrl_npo:.3f})")
-    else:
-        print(f"[WEAK/NO EVIDENCE] norm_post: Solar-GLM ({main_npo:.3f}) vs Control ({ctrl_npo:.3f})")
-
+    main_npo_p = stats["Solar_vs_GLM"]["norm_post"]["pearson_mean"] or 0
+    
+    if main_npo_p > 0.4:
+         print(f"[STRONG EVIDENCE] norm_post Pearson ({main_npo_p:.3f}) indicates shared lineage.")
+    
     # Tokenizer expansion interpretation
     print("\n--- TOKENIZER EXPANSION ANALYSIS ---")
     if tok_analysis["vocab_diff"] > 10000:

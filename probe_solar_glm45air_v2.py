@@ -188,6 +188,18 @@ def cosine(x: np.ndarray, y: np.ndarray) -> float:
     return float(np.dot(x64, y64) / (nx * ny))
 
 
+def pearson(x: np.ndarray, y: np.ndarray) -> float:
+    x64 = x.astype(np.float64, copy=False)
+    y64 = y.astype(np.float64, copy=False)
+    x64 = x64 - np.mean(x64)
+    y64 = y64 - np.mean(y64)
+    nx = np.linalg.norm(x64)
+    ny = np.linalg.norm(y64)
+    if nx == 0.0 or ny == 0.0:
+        return float("nan")
+    return float(np.dot(x64, y64) / (nx * ny))
+
+
 def rel_rmse(x: np.ndarray, y: np.ndarray) -> float:
     x64 = x.astype(np.float64, copy=False)
     y64 = y.astype(np.float64, copy=False)
@@ -372,6 +384,7 @@ def compare_pair(
         b_vals = b_vals[:n]
 
         result["cosine"] = cosine(a_vals, b_vals)
+        result["pearson"] = pearson(a_vals, b_vals)
         result["rel_rmse"] = rel_rmse(a_vals, b_vals)
         result["raw_hash_equal"] = a_raw == b_raw
 
@@ -712,6 +725,7 @@ def main():
 
     def summarize(results: List[Dict], name: str) -> Dict:
         by_type = defaultdict(list)
+        by_type_pearson = defaultdict(list)
         for r in results:
             if r["status"] == "ok" and not math.isnan(r["cosine"]):
                 key = r["key"]
@@ -724,6 +738,8 @@ def main():
                 else:
                     ttype = "other"
                 by_type[ttype].append(r["cosine"])
+                if "pearson" in r and not math.isnan(r["pearson"]):
+                    by_type_pearson[ttype].append(r["pearson"])
 
         summary = {}
         print(f"\n{name}:")
@@ -733,8 +749,12 @@ def main():
                 std_cos = np.std(vals)
                 max_cos = max(vals)
                 min_cos = min(vals)
-                summary[ttype] = {"mean": mean_cos, "std": std_cos, "max": max_cos, "min": min_cos, "n": len(vals)}
-                print(f"  {ttype:15s}: mean={mean_cos:+.4f} std={std_cos:.4f} max={max_cos:+.4f} min={min_cos:+.4f} (n={len(vals)})")
+                
+                p_vals = by_type_pearson.get(ttype, [])
+                mean_p = np.mean(p_vals) if p_vals else 0.0
+                
+                summary[ttype] = {"mean": mean_cos, "std": std_cos, "max": max_cos, "min": min_cos, "n": len(vals), "pearson_mean": mean_p}
+                print(f"  {ttype:15s}: mean={mean_cos:+.4f} pearson={mean_p:+.4f} std={std_cos:.4f} max={max_cos:+.4f} min={min_cos:+.4f} (n={len(vals)})")
         return summary
 
     sg_summary = summarize(solar_glm_results, "Solar vs GLM")
@@ -749,21 +769,24 @@ def main():
     print("=" * 70)
 
     ln_cos = sg_summary.get("layernorm", {}).get("mean", 0)
+    ln_pearson = sg_summary.get("layernorm", {}).get("pearson_mean", 0)
     attn_cos = sg_summary.get("attention", {}).get("mean", 0)
 
     print(f"""
 LayerNorm mean cosine: {ln_cos:.4f}
+LayerNorm mean pearson: {ln_pearson:.4f}
 Attention mean cosine: {attn_cos:.4f}
 
 FINDINGS:
 """)
 
-    if ln_cos > 0.9:
-        print("* STRONG EVIDENCE: LayerNorm weights show extremely high similarity (>0.9)")
-        print("  => These weights were almost certainly COPIED from GLM-4.5-Air")
-    elif ln_cos > 0.5:
-        print("* MODERATE EVIDENCE: LayerNorm weights show significant similarity (>0.5)")
-        print("  => These weights are likely derived from GLM-4.5-Air")
+    if ln_pearson > 0.4:
+        print(f"* STRONG EVIDENCE: LayerNorm Pearson correlation ({ln_pearson:.4f}) is statistically significant")
+        print("  => Weight PATTERNS are preserved (robust to drift)")
+        print("  => This is the strongest indicator of shared lineage")
+    elif ln_cos > 0.9:
+        print(f"* MODERATE EVIDENCE: High Cosine ({ln_cos:.4f}) but low Pearson")
+        print("  => Vectors point in same direction, but patterns differ (likely initialization artifact)")
 
     if abs(attn_cos) < 0.01:
         print("* Attention projection weights show ~0 correlation")
@@ -796,7 +819,7 @@ The evidence strongly suggests Solar-Open-100B was derived from GLM-4.5-Air thro
     # Save results
     csv_path = os.path.join(args.out_dir, "solar_vs_glm_detailed.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        fieldnames = ["layer", "key", "status", "cosine", "rel_rmse", "raw_hash_equal",
+        fieldnames = ["layer", "key", "status", "cosine", "pearson", "rel_rmse", "raw_hash_equal",
                      "a_shape", "b_shape", "note"]
         w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
         w.writeheader()

@@ -80,6 +80,15 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
         return float("nan")
     return float(np.dot(a, b) / (na * nb))
 
+def pearson(a: np.ndarray, b: np.ndarray) -> float:
+    a, b = a.flatten().astype(np.float64), b.flatten().astype(np.float64)
+    a = a - np.mean(a)
+    b = b - np.mean(b)
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    if na == 0 or nb == 0:
+        return float("nan")
+    return float(np.dot(a, b) / (na * nb))
+
 def load_index(repo: str, rev: str, token: Optional[str]) -> Dict[str, str]:
     path = hf_hub_download(repo, "model.safetensors.index.json", revision=rev, token=token)
     with open(path) as f:
@@ -160,8 +169,9 @@ def main():
                 solar_arr = decode_bf16(solar_raw)
                 glm_arr = decode_bf16(glm_raw)
                 cos = cosine(solar_arr, glm_arr)
+                pear = pearson(solar_arr, glm_arr)
                 if cos > 0.99:
-                    print(f"  [HIGH]   {key} cos={cos:.6f}")
+                    print(f"  [HIGH]   {key} cos={cos:.6f} pearson={pear:.6f}")
 
         except Exception as e:
             eprint(f"  [skip] {key}: {e}")
@@ -180,7 +190,9 @@ def main():
     print("       Comparing GLM layer i vs GLM layer j (within-model baseline)")
 
     within_model_cosines = []
+    within_model_pearsons = []
     cross_model_cosines = []
+    cross_model_pearsons = []
 
     # Within GLM: Compare layer 0 vs other layers
     for layer_j in [10, 20, 30, 40]:
@@ -201,8 +213,10 @@ def main():
             arr_j = decode_bf16(raw_j)
 
             cos = cosine(arr_i, arr_j)
+            pear = pearson(arr_i, arr_j)
             within_model_cosines.append(cos)
-            print(f"  GLM[0] vs GLM[{layer_j}]: cos={cos:.6f}")
+            within_model_pearsons.append(pear)
+            print(f"  GLM[0] vs GLM[{layer_j}]: cos={cos:.6f} pearson={pear:.6f}")
         except Exception as e:
             eprint(f"  [skip] {e}")
 
@@ -224,21 +238,29 @@ def main():
             glm_arr = decode_bf16(glm_raw)
 
             cos = cosine(solar_arr, glm_arr)
+            pear = pearson(solar_arr, glm_arr)
             cross_model_cosines.append(cos)
-            print(f"  Solar[{layer}] vs GLM[{layer}]: cos={cos:.6f}")
+            cross_model_pearsons.append(pear)
+            print(f"  Solar[{layer}] vs GLM[{layer}]: cos={cos:.6f} pearson={pear:.6f}")
         except Exception as e:
             eprint(f"  [skip] {e}")
 
     if within_model_cosines and cross_model_cosines:
         within_mean = np.mean(within_model_cosines)
         cross_mean = np.mean(cross_model_cosines)
-        print(f"\n  WITHIN-MODEL baseline: {within_mean:.4f}")
-        print(f"  CROSS-MODEL (Solar-GLM): {cross_mean:.4f}")
-        print(f"  DIFFERENCE: {cross_mean - within_mean:.4f}")
+        within_mean_p = np.mean(within_model_pearsons)
+        cross_mean_p = np.mean(cross_model_pearsons)
+        
+        print(f"\n  WITHIN-MODEL baseline: cos={within_mean:.4f}, pearson={within_mean_p:.4f}")
+        print(f"  CROSS-MODEL (Solar-GLM): cos={cross_mean:.4f}, pearson={cross_mean_p:.4f}")
+        print(f"  DIFFERENCE: cos={cross_mean - within_mean:.4f}, pearson={cross_mean_p - within_mean_p:.4f}")
 
-        if cross_mean > within_mean + 0.1:
-            print("  → Cross-model is SIGNIFICANTLY higher than within-model baseline!")
-            print("  → This suggests WEIGHT DERIVATION, not just similar architecture")
+        if cross_mean_p > within_mean_p + 0.1:
+            print("  → Cross-model Pearson is SIGNIFICANTLY higher than within-model baseline!")
+            print("  → This confirms WEIGHT DERIVATION (Pattern Preserved)")
+        elif cross_mean > within_mean + 0.1:
+            print("  → Cross-model Cosine is higher, but Pearson is not.")
+            print("  → Evidence is weaker (likely initialization artifact)")
 
     # =========================================================
     # TEST 3: COMPREHENSIVE LAYER ANALYSIS
@@ -271,11 +293,13 @@ def main():
                 solar_arr = decode_bf16(solar_raw)
                 glm_arr = decode_bf16(glm_raw)
                 cos = cosine(solar_arr, glm_arr)
+                pear = pearson(solar_arr, glm_arr)
 
                 results.append({
                     "layer": layer,
                     "type": norm_type,
                     "cosine": cos,
+                    "pearson": pear,
                     "exact_match": exact_match,
                 })
 
@@ -284,6 +308,7 @@ def main():
 
     # Summary statistics
     cosines = [r["cosine"] for r in results if not np.isnan(r["cosine"])]
+    pearsons = [r["pearson"] for r in results if not np.isnan(r["pearson"])]
     exact_matches = sum(1 for r in results if r["exact_match"])
 
     print(f"\n  Total comparisons: {len(results)}")
@@ -292,6 +317,8 @@ def main():
     print(f"  Cosine std: {np.std(cosines):.4f}")
     print(f"  Cosine min: {np.min(cosines):.4f}")
     print(f"  Cosine max: {np.max(cosines):.4f}")
+    print(f"  Pearson mean: {np.mean(pearsons):.4f}")
+    print(f"  Pearson std: {np.std(pearsons):.4f}")
 
     # =========================================================
     # TEST 4: ATTENTION WEIGHT COMPARISON
@@ -351,15 +378,30 @@ def main():
         print("             This is IMPOSSIBLE by chance. Proves weight derivation.")
         evidence_score += 100
 
-    # Evidence 2: LayerNorm cosine
-    if np.mean(cosines) > 0.95:
-        print(f"\n[STRONG] LayerNorm mean cosine = {np.mean(cosines):.4f}")
-        if within_model_cosines and np.mean(cosines) > np.mean(within_model_cosines) + 0.05:
-            print("         Cross-model > Within-model baseline")
-            evidence_score += 30
+    # Evidence 2: LayerNorm Pearson (Primary) & Cosine (Secondary)
+    # We prioritize Pearson because LayerNorm weights are initialized to ~1.0,
+    # so raw cosine is always high (>0.9) even for unrelated models.
+    # Pearson measures the correlation of the *deviations* (the "shape"),
+    # which is the true fingerprint of the weights.
+    mean_pearson = np.mean(pearsons)
+    mean_cosine = np.mean(cosines)
+
+    if mean_pearson > 0.4:
+        print(f"\n[STRONG] LayerNorm mean pearson = {mean_pearson:.4f}")
+        print("         High Pearson correlation (>0.4) is the GOLD STANDARD for shared lineage.")
+        print("         It proves weight patterns are identical, regardless of mean shift.")
+        
+        if within_model_pearsons and mean_pearson > np.mean(within_model_pearsons) + 0.1:
+             print("         Cross-model Pearson >> Within-model baseline")
+             evidence_score += 40
         else:
-            print("         But within-model baseline is also high")
-            evidence_score += 10
+             evidence_score += 30
+
+    elif mean_cosine > 0.95:
+        print(f"\n[MODERATE] LayerNorm mean cosine = {mean_cosine:.4f}")
+        print("           High cosine but low Pearson suggests similar direction but different 'shape'.")
+        print("           Likely due to LayerNorm initialization (all ~1.0) rather than copying.")
+        evidence_score += 10
 
     # Evidence 3: Attention ~0
     if attn_cosines and abs(np.mean(attn_cosines)) < 0.01:
@@ -376,9 +418,13 @@ def main():
         print(">>> Solar-Open-100B contains weights directly copied from GLM-4.5-Air")
     elif evidence_score >= 50:
         print("\n>>> CONCLUSION: STRONG EVIDENCE of weight derivation")
+        if mean_pearson > 0.4:
+            print(f">>> High Pearson Correlation ({mean_pearson:.4f}) confirms identical weight patterns.")
         print(">>> Solar-Open-100B very likely derived from GLM-4.5-Air")
     elif evidence_score >= 20:
         print("\n>>> CONCLUSION: MODERATE EVIDENCE")
+        if mean_cosine > 0.9 and mean_pearson < 0.4:
+             print(">>> High Cosine but low Pearson: Likely initialization artifact or weak derivation.")
         print(">>> Possible derivation, but not conclusive")
     else:
         print("\n>>> CONCLUSION: WEAK/NO EVIDENCE")
